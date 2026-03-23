@@ -167,6 +167,7 @@
     ];
 
     const SKEY = 'konfeksiyon_panel_session_v1';
+    const ACTION_TYPES = ['KESIM','YIKAMA_SEVK','YIKAMA_GELEN','DIKIM','KALITE','PAKET','SEVK','KOLI'];
     let me = null;
     let orders = [];
     let selectedOrder = null;
@@ -184,6 +185,129 @@
     function esc(v){ return String(v ?? '').replace(/[&<>\"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
     function parseMeta(n) {
       try { return JSON.parse(n || '{}') || {}; } catch { return {}; }
+    }
+    function norm(v) { return String(v || '').trim().toLocaleUpperCase('tr-TR'); }
+    function kalemIndexBul(kalemler, ad) {
+      const n = norm(ad);
+      if (!n) return -1;
+      for (let i = 0; i < (kalemler || []).length; i++) {
+        const k = kalemler[i] || {};
+        if (norm(k.ad) === n || norm(k.kod) === n) return i;
+      }
+      for (let i = 0; i < (kalemler || []).length; i++) {
+        const k = kalemler[i] || {};
+        if (norm(k.ad).includes(n) || n.includes(norm(k.ad)) || norm(k.kod).includes(n) || n.includes(norm(k.kod))) return i;
+      }
+      return -1;
+    }
+    function parseKalemVal(v) {
+      const s = String(v || '');
+      if (!s.startsWith('IDX:')) return -1;
+      const n = parseInt(s.replace('IDX:', ''), 10);
+      return Number.isFinite(n) ? n : -1;
+    }
+    function kalemKey(k = {}) {
+      return [norm(k.ad || k.kod || ''), norm(k.renk || ''), norm(k.ebat || k.olcu || '')].join('|');
+    }
+
+    async function kdGet(siparisId) {
+      const { data } = await sb.from('siparis_akis')
+        .select('id,notlar')
+        .eq('siparis_id', siparisId)
+        .eq('islem', 'KD_KONFEKSIYON')
+        .limit(1);
+      const row = (data && data[0]) || null;
+      if (!row) return { id: null, kd: {} };
+      let kd = {};
+      try { kd = JSON.parse(row.notlar || '{}') || {}; } catch { kd = {}; }
+      return { id: row.id, kd };
+    }
+
+    async function kdSet(siparisId, kd) {
+      const { id } = await kdGet(siparisId);
+      const json = JSON.stringify(kd || {});
+      if (id) {
+        return await sb.from('siparis_akis').update({ notlar: json, kalem_ad: 'KD_KONFEKSIYON' }).eq('id', id);
+      }
+      return await sb.from('siparis_akis').insert([{
+        siparis_id: siparisId,
+        islem: 'KD_KONFEKSIYON',
+        kalem_ad: 'KD_KONFEKSIYON',
+        miktar: 0,
+        notlar: json
+      }]);
+    }
+
+    async function syncSelectedOrderToKd(rowsParam = null) {
+      if (!selectedOrder) return;
+      const kalemler = parseKalemler(selectedOrder.cins);
+      let rows = rowsParam;
+      if (!rows) {
+        const res = await sb.from('siparis_akis')
+          .select('id,kalem_ad,islem,miktar,notlar')
+          .eq('siparis_id', selectedOrder.id)
+          .order('created_at', { ascending: false })
+          .limit(1000);
+        rows = res.data || [];
+      }
+      const actionRows = (rows || []).filter(r => ACTION_TYPES.includes(String(r.islem || '').toUpperCase()));
+      const { kd } = await kdGet(selectedOrder.id);
+      const next = { ...(kd || {}) };
+
+      next.kesim_toplam = 0;
+      next.dikim_toplam = 0;
+      next.kk_gecen = 0;
+      next.koli_toplam = 0;
+      next.panel_yikama_sevk = 0;
+      next.panel_yikama_gelen = 0;
+      next.panel_sevk_toplam = 0;
+      next.yikama_yapildi = false;
+
+      kalemler.forEach((_, i) => {
+        const key = 'kalem_' + i;
+        next[key] = { ...(next[key] || {}) };
+        next[key].kesilen = 0;
+        next[key].dikilen = 0;
+        next[key].kk_gecen = 0;
+        next[key].kolide = 0;
+      });
+
+      actionRows.forEach(r => {
+        const islem = String(r.islem || '').toUpperCase();
+        const miktar = Math.max(0, parseFloat(r.miktar || 0) || 0);
+        const meta = parseMeta(r.notlar);
+        const metaIdx = Number.isInteger(parseInt(meta?.kalem_idx, 10)) ? parseInt(meta.kalem_idx, 10) : -1;
+        let idx = (metaIdx >= 0 && metaIdx < kalemler.length) ? metaIdx : -1;
+        if (idx < 0 && meta?.kalem_key) {
+          const mk = norm(meta.kalem_key);
+          idx = (kalemler || []).findIndex(k => norm(kalemKey(k)) === mk);
+        }
+        if (idx < 0) idx = kalemIndexBul(kalemler, r.kalem_ad);
+        const key = idx >= 0 ? ('kalem_' + idx) : null;
+        if (islem === 'KESIM') {
+          next.kesim_toplam += miktar;
+          if (key) next[key].kesilen += miktar;
+        } else if (islem === 'DIKIM') {
+          next.dikim_toplam += miktar;
+          if (key) next[key].dikilen += miktar;
+        } else if (islem === 'KALITE') {
+          next.kk_gecen += miktar;
+          if (key) next[key].kk_gecen += miktar;
+        } else if (islem === 'PAKET' || islem === 'KOLI') {
+          next.koli_toplam += miktar;
+          if (key) next[key].kolide += miktar;
+        } else if (islem === 'YIKAMA_SEVK') {
+          next.panel_yikama_sevk += miktar;
+          next.yikama_yapildi = true;
+        } else if (islem === 'YIKAMA_GELEN') {
+          next.panel_yikama_gelen += miktar;
+        } else if (islem === 'SEVK') {
+          next.panel_sevk_toplam += miktar;
+        }
+      });
+
+      next.panel_sync_ts = new Date().toISOString();
+      await kdSet(selectedOrder.id, next);
     }
 
     function login() {
@@ -243,7 +367,7 @@
       byId('selInfo').textContent = `${selectedOrder.sno} - ${selectedOrder.firma || '-'}`;
       const kalemler = parseKalemler(selectedOrder.cins);
       byId('kalem').innerHTML = kalemler.length
-        ? kalemler.map((k,i) => `<option value="${esc(k.ad || k.kod || ('KALEM_'+(i+1)))}">${esc((k.ad || k.kod || ('Kalem '+(i+1))) + (k.renk ? ' - '+k.renk : ''))}</option>`).join('')
+        ? kalemler.map((k,i) => `<option value="IDX:${i}">${esc((k.ad || k.kod || ('Kalem '+(i+1))) + (k.renk ? ' - '+k.renk : '') + (k.ebat ? ' / ' + k.ebat : ''))}</option>`).join('')
         : `<option value="${esc(selectedOrder.sno || 'GENEL')}">GENEL</option>`;
       cancelEdit();
       await loadHistory();
@@ -251,7 +375,11 @@
 
     async function saveAction() {
       if (!selectedOrder) return alert('Once siparis seciniz');
-      const kalem_ad = byId('kalem').value;
+      const kalemVal = byId('kalem').value;
+      const kalemler = parseKalemler(selectedOrder.cins);
+      const kalem_idx = parseKalemVal(kalemVal);
+      const seciliKalem = kalem_idx >= 0 ? (kalemler[kalem_idx] || {}) : null;
+      const kalem_ad = seciliKalem ? (seciliKalem.ad || seciliKalem.kod || ('KALEM_' + (kalem_idx + 1))) : kalemVal;
       const islem = byId('islem').value;
       const miktar = parseFloat(byId('miktar').value || '0');
       const note = byId('not').value.trim();
@@ -263,7 +391,11 @@
         role: me?.role || 'OP',
         ts: new Date().toISOString(),
         note: note || '',
-        revised_from_id: editingActionId || null
+        revised_from_id: editingActionId || null,
+        kalem_idx: kalem_idx >= 0 ? kalem_idx : null,
+        kalem_key: seciliKalem ? kalemKey(seciliKalem) : '',
+        kalem_renk: seciliKalem?.renk || '',
+        kalem_ebat: seciliKalem?.ebat || seciliKalem?.olcu || ''
       };
       let error = null;
       if (editingActionId) {
@@ -289,6 +421,7 @@
       byId('not').value = '';
       cancelEdit();
       await loadHistory();
+      await syncSelectedOrderToKd(historyRows);
       alert(wasEditing ? 'Islem revize edildi' : 'Islem kaydedildi');
     }
 
@@ -327,6 +460,7 @@
       byId('k-dikim').textContent = sum(['DIKIM']).toString();
       byId('k-kp').textContent = sum(['KALITE','PAKET']).toString();
       renderOrderDetail(rows);
+      await syncSelectedOrderToKd(rows);
     }
 
     function cancelEdit() {
@@ -339,10 +473,13 @@
       const row = historyRows.find(x => String(x.id) === String(id));
       if (!row) return;
       editingActionId = row.id;
-      byId('kalem').value = row.kalem_ad || byId('kalem').value;
+      const meta = parseMeta(row.notlar);
+      const idx = Number.isInteger(parseInt(meta?.kalem_idx, 10)) ? parseInt(meta.kalem_idx, 10) : -1;
+      const optVal = idx >= 0 ? `IDX:${idx}` : '';
+      const hasOpt = optVal ? !!byId('kalem').querySelector(`option[value="${optVal}"]`) : false;
+      byId('kalem').value = hasOpt ? optVal : (row.kalem_ad || byId('kalem').value);
       byId('islem').value = row.islem || 'KESIM';
       byId('miktar').value = row.miktar || '';
-      const meta = parseMeta(row.notlar);
       byId('not').value = meta.note || (typeof row.notlar === 'string' ? row.notlar : '');
       byId('saveBtn').textContent = 'Revizeyi Kaydet';
       byId('cancelEditBtn').classList.remove('hide');
