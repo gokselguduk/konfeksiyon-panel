@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+  <title>Konfeksiyon Veri Giris Paneli</title>
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  <style>
+    :root{
+      --bg:#f5f7fb; --card:#fff; --text:#1f2937; --muted:#6b7280; --line:#e5e7eb;
+      --primary:#2563eb; --ok:#10b981; --warn:#f59e0b; --danger:#ef4444;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--text)}
+    .wrap{max-width:960px;margin:0 auto;padding:12px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
+    .row{display:flex;gap:8px;flex-wrap:wrap}
+    .grow{flex:1;min-width:140px}
+    .title{font-size:18px;font-weight:700}
+    .sub{font-size:12px;color:var(--muted)}
+    .input,.select,.btn{width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--line);font-size:14px}
+    .btn{cursor:pointer;font-weight:700;background:#fff}
+    .btn-primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+    .btn-ok{background:var(--ok);color:#fff;border-color:var(--ok)}
+    .btn-ghost{background:#fff}
+    .pill{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;border:1px solid var(--line);background:#fff}
+    .list{display:flex;flex-direction:column;gap:8px;max-height:46vh;overflow:auto}
+    .order{border:1px solid var(--line);border-radius:10px;padding:10px;cursor:pointer;background:#fff}
+    .order.active{border-color:var(--primary);box-shadow:0 0 0 2px rgba(37,99,235,.1)}
+    .hr{height:1px;background:var(--line);margin:8px 0}
+    .kpi{padding:10px;border-radius:10px;background:#f8fafc;border:1px solid var(--line);text-align:center;min-width:90px}
+    .kpi .v{font-size:18px;font-weight:700}
+    .hist{max-height:34vh;overflow:auto;border:1px solid var(--line);border-radius:10px}
+    table{width:100%;border-collapse:collapse}
+    th,td{font-size:12px;padding:8px;border-bottom:1px solid var(--line);text-align:left}
+    th{font-size:11px;color:var(--muted);background:#f9fafb}
+    .hide{display:none}
+    @media (max-width:720px){
+      .title{font-size:16px}
+      .kpi{min-width:calc(50% - 4px)}
+      th,td{font-size:11px;padding:7px}
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div id="loginBox" class="card">
+      <div class="title">Konfeksiyon Giris</div>
+      <div class="sub">Sadece operasyon veri girisi icin mini panel</div>
+      <div class="hr"></div>
+      <div class="row">
+        <div class="grow"><input id="u" class="input" placeholder="Kullanici adi" /></div>
+        <div class="grow"><input id="p" class="input" type="password" placeholder="Sifre" /></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn btn-primary" onclick="login()">Giris Yap</button>
+      </div>
+      <div class="sub" style="margin-top:8px">Varsayilan: kesim1 / 1234</div>
+    </div>
+
+    <div id="appBox" class="hide">
+      <div class="card" style="margin-bottom:10px">
+        <div class="row" style="align-items:center">
+          <div class="grow">
+            <div class="title">Konfeksiyon Veri Giris Paneli</div>
+            <div class="sub">Siparis goruntule, operasyon gir, anlik gecmis takip et</div>
+          </div>
+          <div><span id="who" class="pill">-</span></div>
+          <div><button class="btn" style="width:auto" onclick="logout()">Cikis</button></div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="grow card" style="min-width:320px">
+          <div class="row" style="align-items:center">
+            <div class="grow title" style="font-size:16px">Siparisler</div>
+            <div><button class="btn btn-ghost" style="width:auto" onclick="loadOrders()">Yenile</button></div>
+          </div>
+          <div style="margin-top:8px">
+            <input id="search" class="input" placeholder="Siparis no / musteri ara..." oninput="renderOrders()" />
+          </div>
+          <div id="orders" class="list" style="margin-top:8px"></div>
+        </div>
+
+        <div class="grow card" style="min-width:320px">
+          <div class="title" style="font-size:16px">Operasyon Girisi</div>
+          <div id="selInfo" class="sub" style="margin-top:4px">Siparis seciniz</div>
+          <div class="hr"></div>
+          <div class="row">
+            <div class="grow">
+              <label class="sub">Urun kalemi</label>
+              <select id="kalem" class="select"></select>
+            </div>
+            <div class="grow">
+              <label class="sub">Islem</label>
+              <select id="islem" class="select">
+                <option>KESIM</option>
+                <option>YIKAMA_SEVK</option>
+                <option>YIKAMA_GELEN</option>
+                <option>DIKIM</option>
+                <option>KALITE</option>
+                <option>PAKET</option>
+                <option>SEVK</option>
+              </select>
+            </div>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <div class="grow">
+              <label class="sub">Miktar</label>
+              <input id="miktar" class="input" type="number" min="1" step="1" />
+            </div>
+            <div class="grow">
+              <label class="sub">Not</label>
+              <input id="not" class="input" placeholder="Opsiyonel not" />
+            </div>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button class="btn btn-ok" onclick="saveAction()">Islem Kaydet</button>
+          </div>
+          <div class="hr"></div>
+          <div class="row">
+            <div class="kpi"><div class="sub">Kesim</div><div id="k-kesim" class="v">0</div></div>
+            <div class="kpi"><div class="sub">Yikama</div><div id="k-yikama" class="v">0</div></div>
+            <div class="kpi"><div class="sub">Dikim</div><div id="k-dikim" class="v">0</div></div>
+            <div class="kpi"><div class="sub">Kalite/Paket</div><div id="k-kp" class="v">0</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:10px">
+        <div class="row" style="align-items:center">
+          <div class="grow title" style="font-size:16px">Islem Gecmisi</div>
+          <div class="sub" id="histTitle">-</div>
+        </div>
+        <div class="hist" style="margin-top:8px">
+          <table>
+            <thead>
+              <tr><th>Tarih</th><th>Urun</th><th>Islem</th><th style="text-align:right">Miktar</th><th>Kaydeden / Not</th></tr>
+            </thead>
+            <tbody id="hist"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const SB_URL = 'https://xzpmxdeteovwuqhjtasq.supabase.co';
+    const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh6cG14ZGV0ZW92d3VxaGp0YXNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA4MDE4ODMsImV4cCI6MjA4NjM3Nzg4M30.uITwza3xOP_6sWKij3IQGHHL3nKMN0l5Ree1StfQvH4';
+    const sb = supabase.createClient(SB_URL, SB_KEY);
+
+    const USERS = [
+      { u:'kesim1', p:'1234', role:'KESIM' },
+      { u:'yikama1', p:'1234', role:'YIKAMA' },
+      { u:'kalite1', p:'1234', role:'KALITE' },
+      { u:'admin1', p:'1234', role:'ADMIN' }
+    ];
+
+    const SKEY = 'konfeksiyon_panel_session_v1';
+    let me = null;
+    let orders = [];
+    let selectedOrder = null;
+
+    function parseKalemler(cins) {
+      try {
+        const arr = typeof cins === 'string' ? JSON.parse(cins || '[]') : (cins || []);
+        return Array.isArray(arr) ? arr : [];
+      } catch { return []; }
+    }
+
+    function byId(id){ return document.getElementById(id); }
+    function esc(v){ return String(v ?? '').replace(/[&<>\"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
+
+    function login() {
+      const u = byId('u').value.trim();
+      const p = byId('p').value.trim();
+      const found = USERS.find(x => x.u === u && x.p === p);
+      if (!found) return alert('Kullanici veya sifre hatali');
+      me = { u: found.u, role: found.role };
+      localStorage.setItem(SKEY, JSON.stringify(me));
+      startApp();
+    }
+
+    function logout() {
+      localStorage.removeItem(SKEY);
+      location.reload();
+    }
+
+    async function startApp() {
+      byId('loginBox').classList.add('hide');
+      byId('appBox').classList.remove('hide');
+      byId('who').textContent = me.u + ' / ' + me.role;
+      await loadOrders();
+    }
+
+    async function loadOrders() {
+      const { data, error } = await sb.from('siparisler')
+        .select('id,sno,firma,ttarih,durum,cins,created_at')
+        .order('created_at', { ascending: false })
+        .limit(300);
+      if (error) return alert('Siparisler alinamadi: ' + error.message);
+      orders = data || [];
+      renderOrders();
+    }
+
+    function renderOrders() {
+      const q = byId('search').value.trim().toLowerCase();
+      const list = byId('orders');
+      const filtered = orders.filter(o => (String(o.sno||'') + ' ' + String(o.firma||'')).toLowerCase().includes(q));
+      list.innerHTML = filtered.map(o => {
+        const kalemCount = parseKalemler(o.cins).length;
+        const active = selectedOrder && selectedOrder.id === o.id ? 'active' : '';
+        return `<div class="order ${active}" onclick="pickOrder('${o.id}')">
+          <div class="row" style="align-items:center">
+            <div class="grow"><b>${esc(o.sno || '-')}</b> <span class="sub">(${esc(o.firma || '-')})</span></div>
+            <div><span class="pill">${esc(o.durum || 'BEKLEMEDE')}</span></div>
+          </div>
+          <div class="sub" style="margin-top:4px">Termin: ${esc(o.ttarih || '-')} · Kalem: ${kalemCount}</div>
+        </div>`;
+      }).join('') || `<div class="sub">Siparis bulunamadi.</div>`;
+    }
+
+    async function pickOrder(id) {
+      selectedOrder = orders.find(x => String(x.id) === String(id)) || null;
+      renderOrders();
+      if (!selectedOrder) return;
+      byId('selInfo').textContent = `${selectedOrder.sno} - ${selectedOrder.firma || '-'}`;
+      const kalemler = parseKalemler(selectedOrder.cins);
+      byId('kalem').innerHTML = kalemler.length
+        ? kalemler.map((k,i) => `<option value="${esc(k.ad || k.kod || ('KALEM_'+(i+1)))}">${esc((k.ad || k.kod || ('Kalem '+(i+1))) + (k.renk ? ' - '+k.renk : ''))}</option>`).join('')
+        : `<option value="${esc(selectedOrder.sno || 'GENEL')}">GENEL</option>`;
+      await loadHistory();
+    }
+
+    async function saveAction() {
+      if (!selectedOrder) return alert('Once siparis seciniz');
+      const kalem_ad = byId('kalem').value;
+      const islem = byId('islem').value;
+      const miktar = parseFloat(byId('miktar').value || '0');
+      const note = byId('not').value.trim();
+      if (!miktar || miktar <= 0) return alert('Gecerli miktar giriniz');
+
+      const meta = {
+        user: me?.u || 'operator',
+        role: me?.role || 'OP',
+        ts: new Date().toISOString(),
+        note: note || ''
+      };
+      const { error } = await sb.from('siparis_akis').insert([{
+        siparis_id: selectedOrder.id,
+        kalem_ad,
+        islem,
+        miktar,
+        notlar: JSON.stringify(meta)
+      }]);
+      if (error) return alert('Kayit hatasi: ' + error.message);
+      byId('miktar').value = '';
+      byId('not').value = '';
+      await loadHistory();
+      alert('Islem kaydedildi');
+    }
+
+    function readNot(n) {
+      try {
+        const j = JSON.parse(n || '{}');
+        return `${j.user || '-'}${j.note ? ' / ' + j.note : ''}`;
+      } catch {
+        return String(n || '-');
+      }
+    }
+
+    async function loadHistory() {
+      if (!selectedOrder) return;
+      const { data, error } = await sb.from('siparis_akis')
+        .select('created_at,kalem_ad,islem,miktar,notlar')
+        .eq('siparis_id', selectedOrder.id)
+        .order('created_at', { ascending: false })
+        .limit(400);
+      if (error) return alert('Gecmis alinamadi: ' + error.message);
+
+      const rows = data || [];
+      byId('histTitle').textContent = `${selectedOrder.sno} icin ${rows.length} kayit`;
+      byId('hist').innerHTML = rows.map(r => `<tr>
+        <td>${new Date(r.created_at).toLocaleString('tr-TR')}</td>
+        <td>${esc(r.kalem_ad || '-')}</td>
+        <td><b>${esc(r.islem || '-')}</b></td>
+        <td style="text-align:right"><b>${esc(r.miktar || 0)}</b></td>
+        <td>${esc(readNot(r.notlar))}</td>
+      </tr>`).join('') || `<tr><td colspan="5" class="sub">Kayit yok</td></tr>`;
+
+      const sum = (prefixes) => rows
+        .filter(r => prefixes.some(p => String(r.islem || '').startsWith(p)))
+        .reduce((a,b) => a + (parseFloat(b.miktar)||0), 0);
+      byId('k-kesim').textContent = sum(['KESIM']).toString();
+      byId('k-yikama').textContent = sum(['YIKAMA']).toString();
+      byId('k-dikim').textContent = sum(['DIKIM']).toString();
+      byId('k-kp').textContent = sum(['KALITE','PAKET']).toString();
+    }
+
+    (function boot(){
+      try {
+        me = JSON.parse(localStorage.getItem(SKEY) || 'null');
+      } catch { me = null; }
+      if (me?.u) startApp();
+    })();
+  </script>
+</body>
+</html>
