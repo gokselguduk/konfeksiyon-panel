@@ -190,14 +190,20 @@
     function kalemIndexBul(kalemler, ad) {
       const n = norm(ad);
       if (!n) return -1;
+      const exact = [];
       for (let i = 0; i < (kalemler || []).length; i++) {
         const k = kalemler[i] || {};
-        if (norm(k.ad) === n || norm(k.kod) === n) return i;
+        if (norm(k.ad) === n || norm(k.kod) === n) exact.push(i);
       }
+      if (exact.length === 1) return exact[0];
+      if (exact.length > 1) return -1; // belirsiz: aynı ad birden fazla renkte olabilir
+      const fuzzy = [];
       for (let i = 0; i < (kalemler || []).length; i++) {
         const k = kalemler[i] || {};
-        if (norm(k.ad).includes(n) || n.includes(norm(k.ad)) || norm(k.kod).includes(n) || n.includes(norm(k.kod))) return i;
+        const adN = norm(k.ad), kodN = norm(k.kod);
+        if ((adN && (adN.includes(n) || n.includes(adN))) || (kodN && (kodN.includes(n) || n.includes(kodN)))) fuzzy.push(i);
       }
+      if (fuzzy.length === 1) return fuzzy[0];
       return -1;
     }
     function parseKalemVal(v) {
