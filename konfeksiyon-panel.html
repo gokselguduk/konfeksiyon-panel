@@ -90,11 +90,11 @@
           <div class="row">
             <div class="grow">
               <label class="sub">Urun kalemi</label>
-              <select id="kalem" class="select"></select>
+              <select id="kalem" class="select" onchange="renderRemainingInfo()"></select>
             </div>
             <div class="grow">
               <label class="sub">Islem</label>
-              <select id="islem" class="select">
+              <select id="islem" class="select" onchange="renderRemainingInfo()">
                 <option>KESIM</option>
                 <option>YIKAMA_SEVK</option>
                 <option>YIKAMA_GELEN</option>
@@ -108,12 +108,15 @@
           <div class="row" style="margin-top:8px">
             <div class="grow">
               <label class="sub">Miktar</label>
-              <input id="miktar" class="input" type="number" min="1" step="1" />
+              <input id="miktar" class="input" type="number" min="1" step="1" oninput="renderRemainingInfo()" />
             </div>
             <div class="grow">
               <label class="sub">Not</label>
               <input id="not" class="input" placeholder="Opsiyonel not" />
             </div>
+          </div>
+          <div id="remainBox" style="margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:10px;background:#f8fafc">
+            <div class="sub">Tamamlanma durumu icin siparis seciniz.</div>
           </div>
           <div class="row" style="margin-top:8px">
             <button id="saveBtn" class="btn btn-ok" onclick="saveAction()">Islem Kaydet</button>
@@ -249,6 +252,74 @@
         return { idx: idxFromAd, key: kalemKey(k), kalem: k };
       }
       return { idx: -1, key: '', kalem: null };
+    }
+    function getKalemProgressFromKd(kd, idx, islem) {
+      const row = kd?.[`kalem_${idx}`] || {};
+      const op = String(islem || '').toUpperCase();
+      if (op === 'KESIM') return toInt(row.kesilen);
+      if (op === 'DIKIM') return toInt(row.dikilen);
+      if (op === 'KALITE') return toInt(row.kk_gecen);
+      if (op === 'PAKET' || op === 'KOLI') return toInt(row.kolide);
+      return 0;
+    }
+    function getOrderProgressFromKd(kd, islem) {
+      const op = String(islem || '').toUpperCase();
+      if (op === 'KESIM') return toInt(kd?.kesim_toplam);
+      if (op === 'DIKIM') return toInt(kd?.dikim_toplam);
+      if (op === 'KALITE') return toInt(kd?.kk_gecen);
+      if (op === 'PAKET' || op === 'KOLI') return toInt(kd?.koli_toplam);
+      if (op === 'SEVK') return toInt(kd?.panel_sevk_toplam);
+      if (op === 'YIKAMA_SEVK') return toInt(kd?.panel_yikama_sevk);
+      if (op === 'YIKAMA_GELEN') return toInt(kd?.panel_yikama_gelen);
+      return 0;
+    }
+    async function renderRemainingInfo() {
+      const box = byId('remainBox');
+      if (!box) return;
+      if (!selectedOrder) {
+        box.innerHTML = `<div class="sub">Tamamlanma durumu icin siparis seciniz.</div>`;
+        return;
+      }
+      const kalemler = parseKalemler(selectedOrder.cins);
+      const sel = resolveKalemSelection(kalemler, byId('kalem')?.value || '', '');
+      const islem = byId('islem')?.value || 'KESIM';
+      const girilecek = toInt(byId('miktar')?.value || 0);
+      const { kd } = await kdGet(selectedOrder.id);
+      const orderPlan = kalemler.reduce((a, k) => a + (toInt(k?.miktar) || 0), 0);
+      const orderDone = getOrderProgressFromKd(kd || {}, islem);
+      const orderRemain = Math.max(0, orderPlan - orderDone);
+      const orderAfter = Math.max(0, orderPlan - (orderDone + girilecek));
+
+      if (sel.idx < 0 || !sel.kalem) {
+        box.innerHTML = `
+          <div style="font-size:12px;font-weight:700;margin-bottom:4px">Islem: ${esc(islem)} (Siparis Geneli)</div>
+          <div class="row">
+            <div class="pill">Hedef: <b>${orderPlan}</b></div>
+            <div class="pill">Yapilan: <b>${orderDone}</b></div>
+            <div class="pill">Kalan: <b style="color:${orderRemain>0?'#b45309':'#059669'}">${orderRemain}</b></div>
+            <div class="pill">Bu giristen sonra: <b style="color:${orderAfter>0?'#b45309':'#059669'}">${orderAfter}</b></div>
+          </div>`;
+        return;
+      }
+
+      const kalemPlan = toInt(sel.kalem.miktar || 0);
+      const kalemDone = getKalemProgressFromKd(kd || {}, sel.idx, islem);
+      const kalemRemain = Math.max(0, kalemPlan - kalemDone);
+      const kalemAfter = Math.max(0, kalemPlan - (kalemDone + girilecek));
+      const pct = kalemPlan > 0 ? Math.min(100, Math.round((kalemDone / kalemPlan) * 100)) : 0;
+
+      box.innerHTML = `
+        <div style="font-size:12px;font-weight:700;margin-bottom:4px">${esc(sel.kalem.ad || sel.kalem.kod || ('Kalem '+(sel.idx+1)))} · ${esc(sel.kalem.renk || '-')} · ${esc(sel.kalem.ebat || sel.kalem.olcu || '-')}</div>
+        <div class="row">
+          <div class="pill">Islem: <b>${esc(islem)}</b></div>
+          <div class="pill">Hedef: <b>${kalemPlan}</b></div>
+          <div class="pill">Yapilan: <b>${kalemDone}</b></div>
+          <div class="pill">Kalan: <b style="color:${kalemRemain>0?'#b45309':'#059669'}">${kalemRemain}</b></div>
+          <div class="pill">Bu giristen sonra: <b style="color:${kalemAfter>0?'#b45309':'#059669'}">${kalemAfter}</b></div>
+        </div>
+        <div style="height:8px;background:#e5e7eb;border-radius:999px;overflow:hidden;margin-top:8px">
+          <div style="height:100%;width:${pct}%;background:${kalemRemain>0?'#f59e0b':'#10b981'}"></div>
+        </div>`;
     }
     function toInt(v) {
       const n = parseInt(v, 10);
@@ -536,6 +607,7 @@
         : `<option value="${esc(selectedOrder.sno || 'GENEL')}">GENEL</option>`;
       cancelEdit();
       await loadHistory();
+      await renderRemainingInfo();
     }
 
     async function saveAction() {
@@ -610,6 +682,7 @@
       byId('not').value = '';
       cancelEdit();
       await loadHistory();
+      await renderRemainingInfo();
       alert(wasEditing ? 'Islem revize edildi' : 'Islem kaydedildi');
     }
 
@@ -655,6 +728,7 @@
       byId('k-dikim').textContent = String(n(kd?.dikim_toplam));
       byId('k-kp').textContent = String(n(kd?.kk_gecen) + n(kd?.koli_toplam));
       renderOrderDetail(rows, kd || {});
+      await renderRemainingInfo();
     }
 
     function cancelEdit() {
@@ -684,6 +758,7 @@
       byId('saveBtn').textContent = 'Revizeyi Kaydet';
       byId('cancelEditBtn').classList.remove('hide');
       window.scrollTo({ top: 0, behavior: 'smooth' });
+      renderRemainingInfo();
     }
 
     function resolveRowKalemIndex(row, kalemler) {
@@ -716,6 +791,7 @@
 
       if (String(editingActionId) === String(id)) cancelEdit();
       await loadHistory();
+      await renderRemainingInfo();
     }
 
     function renderOrderDetail(rows = [], kd = {}) {
@@ -741,6 +817,34 @@
         ['PAKET', n(kd.koli_toplam) || sumBy('PAKET')],
         ['SEVK', n(kd.panel_sevk_toplam) || sumBy('SEVK')]
       ];
+      const cutPlan = (kalemler || []).reduce((a, k) => a + (parseInt(k.miktar || 0) || 0), 0);
+      const cutDone = n(kd.kesim_toplam);
+      const cutRemain = Math.max(0, cutPlan - cutDone);
+      const kalemCards = (kalemler || []).map((k, i) => {
+        const row = kd?.[`kalem_${i}`] || {};
+        const plan = parseInt(k.miktar || 0) || 0;
+        const kesilen = parseInt(row.kesilen || 0) || 0;
+        const kalan = Math.max(0, plan - kesilen);
+        const pct = plan > 0 ? Math.min(100, Math.round((kesilen / plan) * 100)) : 0;
+        return `
+        <div style="border:1px solid var(--line);border-radius:10px;padding:8px;background:#fff">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <div style="min-width:0">
+              <div style="font-size:12px;font-weight:700">${esc(k.ad || k.kod || '-')}</div>
+              <div class="sub">${esc(k.renk || '-')} · ${esc(k.ebat || k.olcu || '-')}</div>
+            </div>
+            <div style="font-size:11px;font-weight:700;color:${kalan > 0 ? '#b45309' : '#059669'}">${kalan} kalan</div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:6px">
+            <div class="pill">Plan: <b>${plan}</b></div>
+            <div class="pill">Kesilen: <b>${kesilen}</b></div>
+            <div class="pill">%${pct}</div>
+          </div>
+          <div style="height:8px;background:#eef2f7;border-radius:999px;overflow:hidden;margin-top:6px">
+            <div style="height:100%;width:${pct}%;background:${kalan > 0 ? '#f59e0b' : '#10b981'}"></div>
+          </div>
+        </div>`;
+      }).join('');
       byId('detTitle').textContent = `${selectedOrder.sno} · ${kalemler.length} kalem`;
       byId('orderDetail').innerHTML = `
         <div class="row" style="margin-bottom:8px">
@@ -750,20 +854,37 @@
           <div class="pill">Termin: ${esc(selectedOrder.ttarih || '-')}</div>
           <div class="pill">Toplam Miktar: ${esc(selectedOrder.miktar || 0)}</div>
         </div>
+        <div class="row" style="margin-bottom:8px">
+          <div class="pill">Kesim Plan: <b>${esc(cutPlan)}</b></div>
+          <div class="pill">Kesilen: <b>${esc(cutDone)}</b></div>
+          <div class="pill">Kesim Kalan: <b style="color:${cutRemain > 0 ? '#b45309' : '#059669'}">${esc(cutRemain)}</b></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">
+          <div style="font-size:12px;font-weight:700">Kesim Kalem Durumu</div>
+          ${kalemCards || `<div class="sub">Kalem bilgisi yok.</div>`}
+        </div>
         <div style="overflow:auto;border:1px solid var(--line);border-radius:8px">
           <table>
             <thead>
-              <tr><th>Kod</th><th>Urun</th><th>Renk</th><th>Ebat/Olcu</th><th style="text-align:right">Adet</th><th>Renk Kodlari</th></tr>
+              <tr><th>Kod</th><th>Urun</th><th>Renk</th><th>Ebat/Olcu</th><th style="text-align:right">Siparis</th><th style="text-align:right">Kesilen</th><th style="text-align:right">Kesim Kalan</th><th>Renk Kodlari</th></tr>
             </thead>
             <tbody>
-              ${(kalemler || []).map(k => `<tr>
+              ${(kalemler || []).map((k, i) => {
+                const row = kd?.[`kalem_${i}`] || {};
+                const plan = parseInt(k.miktar || 0) || 0;
+                const kesilen = parseInt(row.kesilen || 0) || 0;
+                const kalan = Math.max(0, plan - kesilen);
+                return `<tr>
                 <td>${esc(k.kod || '-')}</td>
                 <td>${esc(k.ad || '-')}</td>
                 <td>${esc(k.renk || '-')}</td>
                 <td>${esc(k.ebat || k.olcu || '-')}</td>
-                <td style="text-align:right"><b>${esc(k.miktar || 0)}</b></td>
+                <td style="text-align:right"><b>${esc(plan)}</b></td>
+                <td style="text-align:right"><b style="color:#1d4ed8">${esc(kesilen)}</b></td>
+                <td style="text-align:right"><b style="color:${kalan > 0 ? '#b45309' : '#059669'}">${esc(kalan)}</b></td>
                 <td>${esc(k.rkod || [k.rkod1,k.rkod2,k.rkod3,k.rkod4,k.rkod5,k.rkod6].filter(Boolean).join(' | ') || '-')}</td>
-              </tr>`).join('') || `<tr><td colspan="6" class="sub">Kalem bilgisi yok.</td></tr>`}
+              </tr>`;
+              }).join('') || `<tr><td colspan="8" class="sub">Kalem bilgisi yok.</td></tr>`}
             </tbody>
           </table>
         </div>
