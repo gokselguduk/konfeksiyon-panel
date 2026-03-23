@@ -31,6 +31,7 @@
     .kpi{padding:10px;border-radius:10px;background:#f8fafc;border:1px solid var(--line);text-align:center;min-width:90px}
     .kpi .v{font-size:18px;font-weight:700}
     .hist{max-height:34vh;overflow:auto;border:1px solid var(--line);border-radius:10px}
+    .detail{max-height:38vh;overflow:auto;border:1px solid var(--line);border-radius:10px;background:#fff}
     table{width:100%;border-collapse:collapse}
     th,td{font-size:12px;padding:8px;border-bottom:1px solid var(--line);text-align:left}
     th{font-size:11px;color:var(--muted);background:#f9fafb}
@@ -115,7 +116,8 @@
             </div>
           </div>
           <div class="row" style="margin-top:8px">
-            <button class="btn btn-ok" onclick="saveAction()">Islem Kaydet</button>
+            <button id="saveBtn" class="btn btn-ok" onclick="saveAction()">Islem Kaydet</button>
+            <button id="cancelEditBtn" class="btn btn-ghost hide" onclick="cancelEdit()">Revizeyi Iptal</button>
           </div>
           <div class="hr"></div>
           <div class="row">
@@ -129,13 +131,21 @@
 
       <div class="card" style="margin-top:10px">
         <div class="row" style="align-items:center">
+          <div class="grow title" style="font-size:16px">Siparis Detayi</div>
+          <div class="sub" id="detTitle">-</div>
+        </div>
+        <div id="orderDetail" class="detail" style="margin-top:8px;padding:10px"></div>
+      </div>
+
+      <div class="card" style="margin-top:10px">
+        <div class="row" style="align-items:center">
           <div class="grow title" style="font-size:16px">Islem Gecmisi</div>
           <div class="sub" id="histTitle">-</div>
         </div>
         <div class="hist" style="margin-top:8px">
           <table>
             <thead>
-              <tr><th>Tarih</th><th>Urun</th><th>Islem</th><th style="text-align:right">Miktar</th><th>Kaydeden / Not</th></tr>
+              <tr><th>Tarih</th><th>Urun</th><th>Islem</th><th style="text-align:right">Miktar</th><th>Kaydeden / Not</th><th>Islem</th></tr>
             </thead>
             <tbody id="hist"></tbody>
           </table>
@@ -160,6 +170,8 @@
     let me = null;
     let orders = [];
     let selectedOrder = null;
+    let editingActionId = null;
+    let historyRows = [];
 
     function parseKalemler(cins) {
       try {
@@ -170,6 +182,9 @@
 
     function byId(id){ return document.getElementById(id); }
     function esc(v){ return String(v ?? '').replace(/[&<>\"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
+    function parseMeta(n) {
+      try { return JSON.parse(n || '{}') || {}; } catch { return {}; }
+    }
 
     function login() {
       const u = byId('u').value.trim();
@@ -190,12 +205,13 @@
       byId('loginBox').classList.add('hide');
       byId('appBox').classList.remove('hide');
       byId('who').textContent = me.u + ' / ' + me.role;
+      renderOrderDetail([]);
       await loadOrders();
     }
 
     async function loadOrders() {
       const { data, error } = await sb.from('siparisler')
-        .select('id,sno,firma,ttarih,durum,cins,created_at')
+        .select('id,sno,firma,starih,ttarih,durum,cins,miktar,created_at,islem_gecmisi')
         .order('created_at', { ascending: false })
         .limit(300);
       if (error) return alert('Siparisler alinamadi: ' + error.message);
@@ -229,6 +245,7 @@
       byId('kalem').innerHTML = kalemler.length
         ? kalemler.map((k,i) => `<option value="${esc(k.ad || k.kod || ('KALEM_'+(i+1)))}">${esc((k.ad || k.kod || ('Kalem '+(i+1))) + (k.renk ? ' - '+k.renk : ''))}</option>`).join('')
         : `<option value="${esc(selectedOrder.sno || 'GENEL')}">GENEL</option>`;
+      cancelEdit();
       await loadHistory();
     }
 
@@ -239,46 +256,59 @@
       const miktar = parseFloat(byId('miktar').value || '0');
       const note = byId('not').value.trim();
       if (!miktar || miktar <= 0) return alert('Gecerli miktar giriniz');
+      const wasEditing = !!editingActionId;
 
       const meta = {
         user: me?.u || 'operator',
         role: me?.role || 'OP',
         ts: new Date().toISOString(),
-        note: note || ''
+        note: note || '',
+        revised_from_id: editingActionId || null
       };
-      const { error } = await sb.from('siparis_akis').insert([{
-        siparis_id: selectedOrder.id,
-        kalem_ad,
-        islem,
-        miktar,
-        notlar: JSON.stringify(meta)
-      }]);
+      let error = null;
+      if (editingActionId) {
+        const res = await sb.from('siparis_akis').update({
+          kalem_ad,
+          islem,
+          miktar,
+          notlar: JSON.stringify(meta)
+        }).eq('id', editingActionId);
+        error = res.error;
+      } else {
+        const res = await sb.from('siparis_akis').insert([{
+          siparis_id: selectedOrder.id,
+          kalem_ad,
+          islem,
+          miktar,
+          notlar: JSON.stringify(meta)
+        }]);
+        error = res.error;
+      }
       if (error) return alert('Kayit hatasi: ' + error.message);
       byId('miktar').value = '';
       byId('not').value = '';
+      cancelEdit();
       await loadHistory();
-      alert('Islem kaydedildi');
+      alert(wasEditing ? 'Islem revize edildi' : 'Islem kaydedildi');
     }
 
     function readNot(n) {
-      try {
-        const j = JSON.parse(n || '{}');
-        return `${j.user || '-'}${j.note ? ' / ' + j.note : ''}`;
-      } catch {
-        return String(n || '-');
-      }
+      const j = parseMeta(n);
+      if (j && Object.keys(j).length) return `${j.user || '-'}${j.note ? ' / ' + j.note : ''}`;
+      return String(n || '-');
     }
 
     async function loadHistory() {
       if (!selectedOrder) return;
       const { data, error } = await sb.from('siparis_akis')
-        .select('created_at,kalem_ad,islem,miktar,notlar')
+        .select('id,created_at,kalem_ad,islem,miktar,notlar')
         .eq('siparis_id', selectedOrder.id)
         .order('created_at', { ascending: false })
         .limit(400);
       if (error) return alert('Gecmis alinamadi: ' + error.message);
 
       const rows = data || [];
+      historyRows = rows;
       byId('histTitle').textContent = `${selectedOrder.sno} icin ${rows.length} kayit`;
       byId('hist').innerHTML = rows.map(r => `<tr>
         <td>${new Date(r.created_at).toLocaleString('tr-TR')}</td>
@@ -286,7 +316,8 @@
         <td><b>${esc(r.islem || '-')}</b></td>
         <td style="text-align:right"><b>${esc(r.miktar || 0)}</b></td>
         <td>${esc(readNot(r.notlar))}</td>
-      </tr>`).join('') || `<tr><td colspan="5" class="sub">Kayit yok</td></tr>`;
+        <td><button class="btn btn-ghost" style="padding:6px 8px;font-size:11px" onclick="editAction('${r.id}')">Revize</button></td>
+      </tr>`).join('') || `<tr><td colspan="6" class="sub">Kayit yok</td></tr>`;
 
       const sum = (prefixes) => rows
         .filter(r => prefixes.some(p => String(r.islem || '').startsWith(p)))
@@ -295,6 +326,81 @@
       byId('k-yikama').textContent = sum(['YIKAMA']).toString();
       byId('k-dikim').textContent = sum(['DIKIM']).toString();
       byId('k-kp').textContent = sum(['KALITE','PAKET']).toString();
+      renderOrderDetail(rows);
+    }
+
+    function cancelEdit() {
+      editingActionId = null;
+      byId('saveBtn').textContent = 'Islem Kaydet';
+      byId('cancelEditBtn').classList.add('hide');
+    }
+
+    function editAction(id) {
+      const row = historyRows.find(x => String(x.id) === String(id));
+      if (!row) return;
+      editingActionId = row.id;
+      byId('kalem').value = row.kalem_ad || byId('kalem').value;
+      byId('islem').value = row.islem || 'KESIM';
+      byId('miktar').value = row.miktar || '';
+      const meta = parseMeta(row.notlar);
+      byId('not').value = meta.note || (typeof row.notlar === 'string' ? row.notlar : '');
+      byId('saveBtn').textContent = 'Revizeyi Kaydet';
+      byId('cancelEditBtn').classList.remove('hide');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function renderOrderDetail(rows = []) {
+      if (!selectedOrder) {
+        byId('detTitle').textContent = '-';
+        byId('orderDetail').innerHTML = '<div class="sub">Siparis seciniz.</div>';
+        return;
+      }
+      const kalemler = parseKalemler(selectedOrder.cins);
+      const sumBy = (tag) => rows
+        .filter(r => String(r.islem || '').startsWith(tag))
+        .reduce((a,b) => a + (parseFloat(b.miktar) || 0), 0);
+      const ops = [
+        ['KESIM', sumBy('KESIM')],
+        ['YIKAMA_SEVK', sumBy('YIKAMA_SEVK')],
+        ['YIKAMA_GELEN', sumBy('YIKAMA_GELEN')],
+        ['DIKIM', sumBy('DIKIM')],
+        ['KALITE', sumBy('KALITE')],
+        ['PAKET', sumBy('PAKET')],
+        ['SEVK', sumBy('SEVK')]
+      ];
+      byId('detTitle').textContent = `${selectedOrder.sno} · ${kalemler.length} kalem`;
+      byId('orderDetail').innerHTML = `
+        <div class="row" style="margin-bottom:8px">
+          <div class="pill">Musteri: ${esc(selectedOrder.firma || '-')}</div>
+          <div class="pill">Durum: ${esc(selectedOrder.durum || '-')}</div>
+          <div class="pill">Siparis: ${esc(selectedOrder.starih || '-')}</div>
+          <div class="pill">Termin: ${esc(selectedOrder.ttarih || '-')}</div>
+          <div class="pill">Toplam Miktar: ${esc(selectedOrder.miktar || 0)}</div>
+        </div>
+        <div style="overflow:auto;border:1px solid var(--line);border-radius:8px">
+          <table>
+            <thead>
+              <tr><th>Kod</th><th>Urun</th><th>Renk</th><th>Ebat/Olcu</th><th style="text-align:right">Adet</th><th>Renk Kodlari</th></tr>
+            </thead>
+            <tbody>
+              ${(kalemler || []).map(k => `<tr>
+                <td>${esc(k.kod || '-')}</td>
+                <td>${esc(k.ad || '-')}</td>
+                <td>${esc(k.renk || '-')}</td>
+                <td>${esc(k.ebat || k.olcu || '-')}</td>
+                <td style="text-align:right"><b>${esc(k.miktar || 0)}</b></td>
+                <td>${esc(k.rkod || [k.rkod1,k.rkod2,k.rkod3,k.rkod4,k.rkod5,k.rkod6].filter(Boolean).join(' | ') || '-')}</td>
+              </tr>`).join('') || `<tr><td colspan="6" class="sub">Kalem bilgisi yok.</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+        <div style="margin-top:8px;overflow:auto;border:1px solid var(--line);border-radius:8px">
+          <table>
+            <thead><tr><th>Operasyon</th><th style="text-align:right">Toplam</th></tr></thead>
+            <tbody>${ops.map(o => `<tr><td>${o[0]}</td><td style="text-align:right"><b>${o[1]}</b></td></tr>`).join('')}</tbody>
+          </table>
+        </div>
+      `;
     }
 
     (function boot(){
