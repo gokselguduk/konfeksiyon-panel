@@ -56,7 +56,7 @@
       <div class="row" style="margin-top:8px">
         <button class="btn btn-primary" onclick="login()">Giris Yap</button>
       </div>
-      <div class="sub" style="margin-top:8px">Varsayilan: kesim1 / 1234</div>
+      <div class="sub" style="margin-top:8px">Ornek giris: operator1 / 1234 veya admin / 1234</div>
     </div>
 
     <div id="appBox" class="hide">
@@ -159,10 +159,15 @@
     const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh6cG14ZGV0ZW92d3VxaGp0YXNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA4MDE4ODMsImV4cCI6MjA4NjM3Nzg4M30.uITwza3xOP_6sWKij3IQGHHL3nKMN0l5Ree1StfQvH4';
     const sb = supabase.createClient(SB_URL, SB_KEY);
 
+    // Tum kullanicilar konfeksiyon operasyonlarinin tamamina veri girebilir.
+    // Admin kullanici da ayni yetkiyle girer; yonetim/takip icin ayri roldedir.
     const USERS = [
-      { u:'kesim1', p:'1234', role:'KESIM' },
-      { u:'yikama1', p:'1234', role:'YIKAMA' },
-      { u:'kalite1', p:'1234', role:'KALITE' },
+      { u:'operator1', p:'1234', role:'OPERATOR' },
+      { u:'kesim1', p:'1234', role:'OPERATOR' },
+      { u:'yikama1', p:'1234', role:'OPERATOR' },
+      { u:'kalite1', p:'1234', role:'OPERATOR' },
+      { u:'paket1', p:'1234', role:'OPERATOR' },
+      { u:'admin', p:'1234', role:'ADMIN' },
       { u:'admin1', p:'1234', role:'ADMIN' }
     ];
 
@@ -173,6 +178,8 @@
     let selectedOrder = null;
     let editingActionId = null;
     let historyRows = [];
+    let livePollTimer = null;
+    let livePollBusy = false;
 
     function parseKalemler(cins) {
       try {
@@ -215,25 +222,159 @@
     function kalemKey(k = {}) {
       return [norm(k.ad || k.kod || ''), norm(k.renk || ''), norm(k.ebat || k.olcu || '')].join('|');
     }
+    function keyEncode(s) { return encodeURIComponent(String(s || '')); }
+    function keyDecode(s) {
+      try { return decodeURIComponent(String(s || '')); } catch { return String(s || ''); }
+    }
+    function findKalemIndexByKey(kalemler, keyTxt) {
+      const mk = norm(keyTxt);
+      if (!mk) return -1;
+      return (kalemler || []).findIndex(k => norm(kalemKey(k)) === mk);
+    }
+    function resolveKalemSelection(kalemler, selectedVal, fallbackAd = '') {
+      const raw = String(selectedVal || '');
+      if (raw.startsWith('KEY:')) {
+        const keyTxt = keyDecode(raw.slice(4));
+        const idx = findKalemIndexByKey(kalemler, keyTxt);
+        if (idx >= 0) return { idx, key: kalemKey(kalemler[idx] || {}), kalem: kalemler[idx] || {} };
+      }
+      const idxFromIdx = parseKalemVal(raw);
+      if (idxFromIdx >= 0 && idxFromIdx < (kalemler || []).length) {
+        const k = kalemler[idxFromIdx] || {};
+        return { idx: idxFromIdx, key: kalemKey(k), kalem: k };
+      }
+      const idxFromAd = kalemIndexBul(kalemler, fallbackAd);
+      if (idxFromAd >= 0) {
+        const k = kalemler[idxFromAd] || {};
+        return { idx: idxFromAd, key: kalemKey(k), kalem: k };
+      }
+      return { idx: -1, key: '', kalem: null };
+    }
+    function toInt(v) {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) ? n : 0;
+    }
+    function ensureKalemNode(kd, idx) {
+      const key = 'kalem_' + idx;
+      if (!kd[key]) kd[key] = {};
+      const row = kd[key];
+      row.kesilen = toInt(row.kesilen);
+      row.dikilen = toInt(row.dikilen);
+      row.kk_gecen = toInt(row.kk_gecen);
+      row.kolide = toInt(row.kolide);
+      row.fire_kesim = toInt(row.fire_kesim);
+      row.fire_dikim = toInt(row.fire_dikim);
+      row.iki_kalite = toInt(row.iki_kalite);
+      row.tamir = toInt(row.tamir);
+      row.imha = toInt(row.imha);
+      return row;
+    }
+    function clampZero(v) { return Math.max(0, toInt(v)); }
+    function applyActionToKd(kd, kalemIdx, islem, miktarDelta) {
+      const qty = toInt(miktarDelta);
+      const op = String(islem || '').toUpperCase();
+      kd.kesim_toplam = toInt(kd.kesim_toplam);
+      kd.dikim_toplam = toInt(kd.dikim_toplam);
+      kd.kk_gecen = toInt(kd.kk_gecen);
+      kd.koli_toplam = toInt(kd.koli_toplam);
+      kd.panel_yikama_sevk = toInt(kd.panel_yikama_sevk);
+      kd.panel_yikama_gelen = toInt(kd.panel_yikama_gelen);
+      kd.panel_sevk_toplam = toInt(kd.panel_sevk_toplam);
+      const hasKalem = Number.isInteger(kalemIdx) && kalemIdx >= 0;
+      const kalem = hasKalem ? ensureKalemNode(kd, kalemIdx) : null;
+
+      if (op === 'KESIM') {
+        kd.kesim_toplam += qty;
+        if (kalem) kalem.kesilen += qty;
+      } else if (op === 'DIKIM') {
+        kd.dikim_toplam += qty;
+        if (kalem) kalem.dikilen += qty;
+      } else if (op === 'KALITE') {
+        kd.kk_gecen += qty;
+        if (kalem) kalem.kk_gecen += qty;
+      } else if (op === 'PAKET' || op === 'KOLI') {
+        kd.koli_toplam += qty;
+        if (kalem) kalem.kolide += qty;
+      } else if (op === 'YIKAMA_SEVK') {
+        kd.panel_yikama_sevk += qty;
+        if (qty > 0) kd.yikama_yapildi = true;
+      } else if (op === 'YIKAMA_GELEN') {
+        kd.panel_yikama_gelen += qty;
+      } else if (op === 'SEVK') {
+        kd.panel_sevk_toplam += qty;
+      }
+
+      kd.kesim_toplam = clampZero(kd.kesim_toplam);
+      kd.dikim_toplam = clampZero(kd.dikim_toplam);
+      kd.kk_gecen = clampZero(kd.kk_gecen);
+      kd.koli_toplam = clampZero(kd.koli_toplam);
+      kd.panel_yikama_sevk = clampZero(kd.panel_yikama_sevk);
+      kd.panel_yikama_gelen = clampZero(kd.panel_yikama_gelen);
+      kd.panel_sevk_toplam = clampZero(kd.panel_sevk_toplam);
+      if (kalem) {
+        kalem.kesilen = clampZero(kalem.kesilen);
+        kalem.dikilen = clampZero(kalem.dikilen);
+        kalem.kk_gecen = clampZero(kalem.kk_gecen);
+        kalem.kolide = clampZero(kalem.kolide);
+      }
+      kd.panel_sync_ts = new Date().toISOString();
+      return kd;
+    }
+    function kdDataScore(v) {
+      if (!v || typeof v !== 'object') return -1;
+      let s = 0;
+      ['kesim_toplam','dikim_toplam','kk_gecen','koli_toplam','panel_yikama_sevk','panel_yikama_gelen','panel_sevk_toplam']
+        .forEach(k => { if (Number(v[k] || 0) > 0) s += 2; });
+      Object.keys(v).forEach(k => {
+        if (!k.startsWith('kalem_')) return;
+        const r = v[k] || {};
+        if (Number(r.kesilen || 0) > 0) s += 3;
+        if (Number(r.dikilen || 0) > 0) s += 3;
+        if (Number(r.kk_gecen || 0) > 0) s += 2;
+        if (Number(r.kolide || 0) > 0) s += 2;
+      });
+      return s;
+    }
 
     async function kdGet(siparisId) {
-      const { data } = await sb.from('siparis_akis')
-        .select('id,notlar')
+      const { data, error } = await sb.from('siparis_akis')
+        .select('id,kalem_ad,notlar,created_at')
         .eq('siparis_id', siparisId)
         .eq('islem', 'KD_KONFEKSIYON')
-        .limit(1);
-      const row = (data && data[0]) || null;
-      if (!row) return { id: null, kd: {} };
-      let kd = {};
-      try { kd = JSON.parse(row.notlar || '{}') || {}; } catch { kd = {}; }
-      return { id: row.id, kd };
+        .order('created_at', { ascending: false })
+        .limit(30);
+      if (error) return { id: null, kd: {} };
+      const candidates = (data || [])
+        .filter(r => !r?.kalem_ad || r.kalem_ad === 'KD_KONFEKSIYON')
+        .map(r => {
+          try {
+            const parsed = JSON.parse(r.notlar || '{}') || {};
+            return { id: r.id, kd: parsed, score: kdDataScore(parsed) };
+          } catch (_) {
+            return null;
+          }
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.score - a.score);
+      if (!candidates.length) return { id: null, kd: {} };
+      return { id: candidates[0].id, kd: candidates[0].kd };
     }
 
     async function kdSet(siparisId, kd) {
-      const { id } = await kdGet(siparisId);
       const json = JSON.stringify(kd || {});
-      if (id) {
-        return await sb.from('siparis_akis').update({ notlar: json, kalem_ad: 'KD_KONFEKSIYON' }).eq('id', id);
+      const { data: rows, error: selErr } = await sb.from('siparis_akis')
+        .select('id')
+        .eq('siparis_id', siparisId)
+        .eq('islem', 'KD_KONFEKSIYON')
+        .eq('kalem_ad', 'KD_KONFEKSIYON')
+        .limit(100);
+      if (selErr) return { error: selErr };
+      if ((rows || []).length > 0) {
+        return await sb.from('siparis_akis')
+          .update({ notlar: json, kalem_ad: 'KD_KONFEKSIYON', miktar: 0 })
+          .eq('siparis_id', siparisId)
+          .eq('islem', 'KD_KONFEKSIYON')
+          .eq('kalem_ad', 'KD_KONFEKSIYON');
       }
       return await sb.from('siparis_akis').insert([{
         siparis_id: siparisId,
@@ -327,6 +468,7 @@
     }
 
     function logout() {
+      stopLivePolling();
       localStorage.removeItem(SKEY);
       location.reload();
     }
@@ -337,6 +479,23 @@
       byId('who').textContent = me.u + ' / ' + me.role;
       renderOrderDetail([]);
       await loadOrders();
+      startLivePolling();
+    }
+
+    function stopLivePolling() {
+      if (livePollTimer) clearInterval(livePollTimer);
+      livePollTimer = null;
+      livePollBusy = false;
+    }
+
+    function startLivePolling() {
+      stopLivePolling();
+      livePollTimer = setInterval(async () => {
+        if (!selectedOrder || livePollBusy) return;
+        livePollBusy = true;
+        try { await loadHistory(); } catch (_) {}
+        livePollBusy = false;
+      }, 3000);
     }
 
     async function loadOrders() {
@@ -373,7 +532,7 @@
       byId('selInfo').textContent = `${selectedOrder.sno} - ${selectedOrder.firma || '-'}`;
       const kalemler = parseKalemler(selectedOrder.cins);
       byId('kalem').innerHTML = kalemler.length
-        ? kalemler.map((k,i) => `<option value="IDX:${i}">${esc((k.ad || k.kod || ('Kalem '+(i+1))) + (k.renk ? ' - '+k.renk : '') + (k.ebat ? ' / ' + k.ebat : ''))}</option>`).join('')
+        ? kalemler.map((k,i) => `<option value="KEY:${keyEncode(kalemKey(k))}">${esc((k.ad || k.kod || ('Kalem '+(i+1))) + (k.renk ? ' - '+k.renk : '') + (k.ebat ? ' / ' + k.ebat : ''))}</option>`).join('')
         : `<option value="${esc(selectedOrder.sno || 'GENEL')}">GENEL</option>`;
       cancelEdit();
       await loadHistory();
@@ -383,14 +542,18 @@
       if (!selectedOrder) return alert('Once siparis seciniz');
       const kalemVal = byId('kalem').value;
       const kalemler = parseKalemler(selectedOrder.cins);
-      const kalem_idx = parseKalemVal(kalemVal);
-      const seciliKalem = kalem_idx >= 0 ? (kalemler[kalem_idx] || {}) : null;
+      const selected = resolveKalemSelection(kalemler, kalemVal, '');
+      const kalem_idx = selected.idx;
+      const seciliKalem = selected.kalem;
       const kalem_ad = seciliKalem ? (seciliKalem.ad || seciliKalem.kod || ('KALEM_' + (kalem_idx + 1))) : kalemVal;
       const islem = byId('islem').value;
       const miktar = parseFloat(byId('miktar').value || '0');
       const note = byId('not').value.trim();
       if (!miktar || miktar <= 0) return alert('Gecerli miktar giriniz');
       const wasEditing = !!editingActionId;
+      const qty = toInt(miktar);
+      const opNorm = String(islem || '').toUpperCase();
+      const oldRow = wasEditing ? historyRows.find(x => String(x.id) === String(editingActionId)) : null;
 
       const meta = {
         user: me?.u || 'operator',
@@ -399,16 +562,35 @@
         note: note || '',
         revised_from_id: editingActionId || null,
         kalem_idx: kalem_idx >= 0 ? kalem_idx : null,
-        kalem_key: seciliKalem ? kalemKey(seciliKalem) : '',
+        kalem_key: selected.key || '',
         kalem_renk: seciliKalem?.renk || '',
         kalem_ebat: seciliKalem?.ebat || seciliKalem?.olcu || ''
       };
       let error = null;
+      // Kaydi once KD_KONFEKSIYON alani uzerine uygula (tek gercek kaynak).
+      const kdPack = await kdGet(selectedOrder.id);
+      const kd = { ...(kdPack.kd || {}) };
+      if (wasEditing && oldRow) {
+        const oldMeta = parseMeta(oldRow.notlar);
+        const oldResolved = resolveKalemSelection(kalemler, `KEY:${keyEncode(oldMeta?.kalem_key || '')}`, oldRow.kalem_ad || '');
+        const oldIdxByMeta = Number.isInteger(parseInt(oldMeta?.kalem_idx, 10)) ? parseInt(oldMeta.kalem_idx, 10) : -1;
+        const oldIdx = oldResolved.idx >= 0 ? oldResolved.idx : oldIdxByMeta;
+        const oldIslem = String(oldRow.islem || '').toUpperCase();
+        const oldQty = toInt(oldRow.miktar);
+        applyActionToKd(kd, oldIdx, oldIslem, -oldQty);
+      }
+      if (kalem_idx < 0 && kalemler.length > 0) {
+        return alert('Kalem eslesmedi. Renk/ebat secimini yeniden yapip kaydedin.');
+      }
+      applyActionToKd(kd, kalem_idx >= 0 ? kalem_idx : -1, opNorm, qty);
+      const kdRes = await kdSet(selectedOrder.id, kd);
+      if (kdRes?.error) return alert('KD guncelleme hatasi: ' + kdRes.error.message);
+
       if (editingActionId) {
         const res = await sb.from('siparis_akis').update({
           kalem_ad,
-          islem,
-          miktar,
+          islem: opNorm,
+          miktar: qty,
           notlar: JSON.stringify(meta)
         }).eq('id', editingActionId);
         error = res.error;
@@ -416,18 +598,18 @@
         const res = await sb.from('siparis_akis').insert([{
           siparis_id: selectedOrder.id,
           kalem_ad,
-          islem,
-          miktar,
+          islem: opNorm,
+          miktar: qty,
           notlar: JSON.stringify(meta)
         }]);
         error = res.error;
       }
+
       if (error) return alert('Kayit hatasi: ' + error.message);
       byId('miktar').value = '';
       byId('not').value = '';
       cancelEdit();
       await loadHistory();
-      await syncSelectedOrderToKd(historyRows);
       alert(wasEditing ? 'Islem revize edildi' : 'Islem kaydedildi');
     }
 
@@ -442,6 +624,7 @@
       const { data, error } = await sb.from('siparis_akis')
         .select('id,created_at,kalem_ad,islem,miktar,notlar')
         .eq('siparis_id', selectedOrder.id)
+        .in('islem', ACTION_TYPES)
         .order('created_at', { ascending: false })
         .limit(400);
       if (error) return alert('Gecmis alinamadi: ' + error.message);
@@ -455,18 +638,23 @@
         <td><b>${esc(r.islem || '-')}</b></td>
         <td style="text-align:right"><b>${esc(r.miktar || 0)}</b></td>
         <td>${esc(readNot(r.notlar))}</td>
-        <td><button class="btn btn-ghost" style="padding:6px 8px;font-size:11px" onclick="editAction('${r.id}')">Revize</button></td>
+        <td style="display:flex;gap:4px">
+          <button class="btn btn-ghost" style="padding:6px 8px;font-size:11px" onclick="editAction('${r.id}')">Revize</button>
+          <button class="btn" style="padding:6px 8px;font-size:11px;border-color:#fecaca;color:#b91c1c;background:#fff5f5" onclick="deleteAction('${r.id}')">Sil</button>
+        </td>
       </tr>`).join('') || `<tr><td colspan="6" class="sub">Kayit yok</td></tr>`;
 
-      const sum = (prefixes) => rows
-        .filter(r => prefixes.some(p => String(r.islem || '').startsWith(p)))
-        .reduce((a,b) => a + (parseFloat(b.miktar)||0), 0);
-      byId('k-kesim').textContent = sum(['KESIM']).toString();
-      byId('k-yikama').textContent = sum(['YIKAMA']).toString();
-      byId('k-dikim').textContent = sum(['DIKIM']).toString();
-      byId('k-kp').textContent = sum(['KALITE','PAKET']).toString();
-      renderOrderDetail(rows);
-      await syncSelectedOrderToKd(rows);
+      // Tek kaynak: KD_KONFEKSIYON
+      const { kd } = await kdGet(selectedOrder.id);
+      const n = (v) => {
+        const x = parseFloat(v || 0);
+        return Number.isFinite(x) ? x : 0;
+      };
+      byId('k-kesim').textContent = String(n(kd?.kesim_toplam));
+      byId('k-yikama').textContent = String(n(kd?.panel_yikama_sevk) + n(kd?.panel_yikama_gelen));
+      byId('k-dikim').textContent = String(n(kd?.dikim_toplam));
+      byId('k-kp').textContent = String(n(kd?.kk_gecen) + n(kd?.koli_toplam));
+      renderOrderDetail(rows, kd || {});
     }
 
     function cancelEdit() {
@@ -480,10 +668,16 @@
       if (!row) return;
       editingActionId = row.id;
       const meta = parseMeta(row.notlar);
-      const idx = Number.isInteger(parseInt(meta?.kalem_idx, 10)) ? parseInt(meta.kalem_idx, 10) : -1;
-      const optVal = idx >= 0 ? `IDX:${idx}` : '';
-      const hasOpt = optVal ? !!byId('kalem').querySelector(`option[value="${optVal}"]`) : false;
-      byId('kalem').value = hasOpt ? optVal : (row.kalem_ad || byId('kalem').value);
+      const keyOpt = meta?.kalem_key ? `KEY:${keyEncode(meta.kalem_key)}` : '';
+      const hasKeyOpt = keyOpt ? !!byId('kalem').querySelector(`option[value="${keyOpt}"]`) : false;
+      if (hasKeyOpt) {
+        byId('kalem').value = keyOpt;
+      } else {
+        const idx = Number.isInteger(parseInt(meta?.kalem_idx, 10)) ? parseInt(meta.kalem_idx, 10) : -1;
+        const idxOpt = idx >= 0 ? `IDX:${idx}` : '';
+        const hasIdxOpt = idxOpt ? !!byId('kalem').querySelector(`option[value="${idxOpt}"]`) : false;
+        byId('kalem').value = hasIdxOpt ? idxOpt : (row.kalem_ad || byId('kalem').value);
+      }
       byId('islem').value = row.islem || 'KESIM';
       byId('miktar').value = row.miktar || '';
       byId('not').value = meta.note || (typeof row.notlar === 'string' ? row.notlar : '');
@@ -492,7 +686,39 @@
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
-    function renderOrderDetail(rows = []) {
+    function resolveRowKalemIndex(row, kalemler) {
+      const meta = parseMeta(row?.notlar);
+      const byKey = resolveKalemSelection(kalemler, `KEY:${keyEncode(meta?.kalem_key || '')}`, row?.kalem_ad || '');
+      const idxMeta = Number.isInteger(parseInt(meta?.kalem_idx, 10)) ? parseInt(meta.kalem_idx, 10) : -1;
+      if (byKey.idx >= 0) return byKey.idx;
+      if (idxMeta >= 0 && idxMeta < kalemler.length) return idxMeta;
+      return -1;
+    }
+
+    async function deleteAction(id) {
+      if (!selectedOrder) return;
+      const row = historyRows.find(x => String(x.id) === String(id));
+      if (!row) return;
+      if (!confirm('Bu kayit silinsin mi? KD toplamlarindan geri dusulecek.')) return;
+      const kalemler = parseKalemler(selectedOrder.cins);
+      const idx = resolveRowKalemIndex(row, kalemler);
+      const op = String(row.islem || '').toUpperCase();
+      const qty = toInt(row.miktar);
+
+      const kdPack = await kdGet(selectedOrder.id);
+      const kd = { ...(kdPack.kd || {}) };
+      applyActionToKd(kd, idx, op, -qty);
+      const kdRes = await kdSet(selectedOrder.id, kd);
+      if (kdRes?.error) return alert('KD guncelleme hatasi: ' + kdRes.error.message);
+
+      const { error } = await sb.from('siparis_akis').delete().eq('id', id);
+      if (error) return alert('Silme hatasi: ' + error.message);
+
+      if (String(editingActionId) === String(id)) cancelEdit();
+      await loadHistory();
+    }
+
+    function renderOrderDetail(rows = [], kd = {}) {
       if (!selectedOrder) {
         byId('detTitle').textContent = '-';
         byId('orderDetail').innerHTML = '<div class="sub">Siparis seciniz.</div>';
@@ -502,14 +728,18 @@
       const sumBy = (tag) => rows
         .filter(r => String(r.islem || '').startsWith(tag))
         .reduce((a,b) => a + (parseFloat(b.miktar) || 0), 0);
+      const n = (v) => {
+        const x = parseFloat(v || 0);
+        return Number.isFinite(x) ? x : 0;
+      };
       const ops = [
-        ['KESIM', sumBy('KESIM')],
-        ['YIKAMA_SEVK', sumBy('YIKAMA_SEVK')],
-        ['YIKAMA_GELEN', sumBy('YIKAMA_GELEN')],
-        ['DIKIM', sumBy('DIKIM')],
-        ['KALITE', sumBy('KALITE')],
-        ['PAKET', sumBy('PAKET')],
-        ['SEVK', sumBy('SEVK')]
+        ['KESIM', n(kd.kesim_toplam) || sumBy('KESIM')],
+        ['YIKAMA_SEVK', n(kd.panel_yikama_sevk) || sumBy('YIKAMA_SEVK')],
+        ['YIKAMA_GELEN', n(kd.panel_yikama_gelen) || sumBy('YIKAMA_GELEN')],
+        ['DIKIM', n(kd.dikim_toplam) || sumBy('DIKIM')],
+        ['KALITE', n(kd.kk_gecen) || sumBy('KALITE')],
+        ['PAKET', n(kd.koli_toplam) || sumBy('PAKET')],
+        ['SEVK', n(kd.panel_sevk_toplam) || sumBy('SEVK')]
       ];
       byId('detTitle').textContent = `${selectedOrder.sno} · ${kalemler.length} kalem`;
       byId('orderDetail').innerHTML = `
