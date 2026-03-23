@@ -181,6 +181,7 @@
     let selectedOrder = null;
     let editingActionId = null;
     let historyRows = [];
+    let currentKd = {};
     let livePollTimer = null;
     let livePollBusy = false;
 
@@ -273,7 +274,7 @@
       if (op === 'YIKAMA_GELEN') return toInt(kd?.panel_yikama_gelen);
       return 0;
     }
-    async function renderRemainingInfo() {
+    function renderRemainingInfo() {
       const box = byId('remainBox');
       if (!box) return;
       if (!selectedOrder) {
@@ -284,7 +285,7 @@
       const sel = resolveKalemSelection(kalemler, byId('kalem')?.value || '', '');
       const islem = byId('islem')?.value || 'KESIM';
       const girilecek = toInt(byId('miktar')?.value || 0);
-      const { kd } = await kdGet(selectedOrder.id);
+      const kd = currentKd || {};
       const orderPlan = kalemler.reduce((a, k) => a + (toInt(k?.miktar) || 0), 0);
       const orderDone = getOrderProgressFromKd(kd || {}, islem);
       const orderRemain = Math.max(0, orderPlan - orderDone);
@@ -563,6 +564,8 @@
       stopLivePolling();
       livePollTimer = setInterval(async () => {
         if (!selectedOrder || livePollBusy) return;
+        const activeId = document.activeElement?.id || '';
+        if (activeId === 'miktar' || activeId === 'not') return;
         livePollBusy = true;
         try { await loadHistory(); } catch (_) {}
         livePollBusy = false;
@@ -607,7 +610,7 @@
         : `<option value="${esc(selectedOrder.sno || 'GENEL')}">GENEL</option>`;
       cancelEdit();
       await loadHistory();
-      await renderRemainingInfo();
+      renderRemainingInfo();
     }
 
     async function saveAction() {
@@ -657,6 +660,7 @@
       applyActionToKd(kd, kalem_idx >= 0 ? kalem_idx : -1, opNorm, qty);
       const kdRes = await kdSet(selectedOrder.id, kd);
       if (kdRes?.error) return alert('KD guncelleme hatasi: ' + kdRes.error.message);
+      currentKd = { ...kd };
 
       if (editingActionId) {
         const res = await sb.from('siparis_akis').update({
@@ -682,7 +686,7 @@
       byId('not').value = '';
       cancelEdit();
       await loadHistory();
-      await renderRemainingInfo();
+      renderRemainingInfo();
       alert(wasEditing ? 'Islem revize edildi' : 'Islem kaydedildi');
     }
 
@@ -727,8 +731,9 @@
       byId('k-yikama').textContent = String(n(kd?.panel_yikama_sevk) + n(kd?.panel_yikama_gelen));
       byId('k-dikim').textContent = String(n(kd?.dikim_toplam));
       byId('k-kp').textContent = String(n(kd?.kk_gecen) + n(kd?.koli_toplam));
+      currentKd = { ...(kd || {}) };
       renderOrderDetail(rows, kd || {});
-      await renderRemainingInfo();
+      renderRemainingInfo();
     }
 
     function cancelEdit() {
@@ -785,13 +790,14 @@
       applyActionToKd(kd, idx, op, -qty);
       const kdRes = await kdSet(selectedOrder.id, kd);
       if (kdRes?.error) return alert('KD guncelleme hatasi: ' + kdRes.error.message);
+      currentKd = { ...kd };
 
       const { error } = await sb.from('siparis_akis').delete().eq('id', id);
       if (error) return alert('Silme hatasi: ' + error.message);
 
       if (String(editingActionId) === String(id)) cancelEdit();
       await loadHistory();
-      await renderRemainingInfo();
+      renderRemainingInfo();
     }
 
     function renderOrderDetail(rows = [], kd = {}) {
